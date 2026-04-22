@@ -1,0 +1,170 @@
+"""
+Baseline immunization strategies for comparison with SONIC.
+
+Baselines:
+1. Random       — random node removal (lower bound)
+2. Degree       — remove highest out-degree nodes
+3. Katz         — remove highest Katz centrality nodes
+4. DINO-only    — αw=1, βw=0 (structural only)
+5. SourceOnly   — αw=0, βw=1 (source-risk only)
+6. Betweenness  — remove highest betweenness centrality nodes
+"""
+
+import numpy as np
+import networkx as nx
+from algorithms.dino import dino, spectral_radius
+from algorithms.sonic import sonic
+
+
+# ---------------------------------------------------------------------------
+# Simple centrality baselines
+# ---------------------------------------------------------------------------
+
+def random_immunization(G, k, seed=42):
+    """Select k nodes uniformly at random."""
+    rng = np.random.default_rng(seed)
+    nodes = list(G.nodes())
+    chosen = rng.choice(nodes, size=min(k, len(nodes)), replace=False)
+    return list(chosen)
+
+
+def degree_immunization(G, k):
+    """
+    Select top-k nodes by out-degree (directed).
+    Ties broken by in-degree descending.
+    """
+    nodes = sorted(
+        G.nodes(),
+        key=lambda v: (G.out_degree(v), G.in_degree(v)),
+        reverse=True
+    )
+    return nodes[:k]
+
+
+def katz_immunization(G, k, beta=0.01):
+    """
+    Select top-k nodes by Katz centrality.
+    beta should be < 1/spectral_radius(G) for convergence.
+    Falls back to smaller beta if needed.
+    """
+    rho = spectral_radius(G)
+    if rho > 0 and beta >= 1.0 / rho:
+        beta = 0.9 / rho
+
+    try:
+        katz = nx.katz_centrality_numpy(G, alpha=beta, normalized=True)
+    except Exception:
+        # Fall back to degree if Katz fails on disconnected/trivial graphs
+        return degree_immunization(G, k)
+
+    nodes = sorted(katz, key=katz.get, reverse=True)
+    return nodes[:k]
+
+
+def betweenness_immunization(G, k, k_approx=None):
+    """
+    Select top-k nodes by betweenness centrality.
+    Uses exact computation; for large graphs pass k_approx to use sampling.
+    """
+    if k_approx is not None:
+        bc = nx.betweenness_centrality(G, k=k_approx, normalized=True)
+    else:
+        bc = nx.betweenness_centrality(G, normalized=True)
+    nodes = sorted(bc, key=bc.get, reverse=True)
+    return nodes[:k]
+
+
+# ---------------------------------------------------------------------------
+# SONIC ablation variants
+# ---------------------------------------------------------------------------
+
+def dino_only(G, Gn, k, **kwargs):
+    """DINO: αw=1, βw=0. Pure structural immunization."""
+    return sonic(G, Gn, k, alpha_w=1.0, beta_w=0.0,
+                 return_delta_rho=False, **kwargs)
+
+
+def source_only(G, Gn, k, **kwargs):
+    """SourceOnly: αw=0, βw=1. Pure source-risk immunization."""
+    return sonic(G, Gn, k, alpha_w=0.0, beta_w=1.0,
+                 return_delta_rho=False, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Run all baselines for a given graph + budget
+# ---------------------------------------------------------------------------
+
+def run_all_baselines(G, Gn, k, seed=42, verbose=True, run_betweenness=False):
+    """
+    Run all baseline immunization strategies.
+
+    Parameters
+    ----------
+    G    : nx.DiGraph, full network
+    Gn   : nx.DiGraph, observed epidemic subgraph
+    k    : int, immunization budget
+    seed : int
+    verbose : bool
+
+    Returns
+    -------
+    results : dict {method_name: list_of_immunized_nodes}
+    """
+    results = {}
+
+    methods = {
+        "Random":       lambda: random_immunization(G, k, seed=seed),
+        "Degree":       lambda: degree_immunization(G, k),
+        "Katz":         lambda: katz_immunization(G, k),
+        "DINO":         lambda: dino_only(G, Gn, k),
+        "SourceOnly":   lambda: source_only(G, Gn, k),
+    }
+
+    if run_betweenness:
+        # Expensive for large graphs
+        n = G.number_of_nodes()
+        k_approx = min(200, n) if n > 1000 else None
+        methods["Betweenness"] = lambda: betweenness_immunization(G, k, k_approx=k_approx)
+
+    for name, fn in methods.items():
+        if verbose:
+            print(f"  Running baseline: {name} (k={k})...", end=" ", flush=True)
+        immunized = fn()
+        results[name] = immunized
+        if verbose:
+            print(f"done ({len(immunized)} nodes)")
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Convenience: evaluate baselines and return metric dicts
+# ---------------------------------------------------------------------------
+
+def evaluate_baselines(G, Gn, k, seed=42, run_sis=True, verbose=True,
+                       run_betweenness=False):
+    """
+    Run baselines and compute delta_rho (+ SIS if run_sis=True).
+
+    Returns
+    -------
+    metrics_list : list of metric dicts (one per method)
+    """
+    from evaluation.metrics import evaluate_method
+
+    baseline_nodes = run_all_baselines(
+        G, Gn, k, seed=seed, verbose=verbose,
+        run_betweenness=run_betweenness
+    )
+
+    metrics_list = []
+    for name, immunized in baseline_nodes.items():
+        m = evaluate_method(
+            G, immunized,
+            method_name=name,
+            run_sis=run_sis,
+            verbose=verbose,
+        )
+        metrics_list.append(m)
+
+    return metrics_list
