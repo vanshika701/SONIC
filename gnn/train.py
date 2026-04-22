@@ -159,8 +159,8 @@ def train_deeptrace(
     finetune_batch = list(generate_training_batch(
         n_graphs=n_finetune,
         n_nodes=50,
-        n_infected_range=(5, 15),  # keep small so exact labels are tractable
-        exact_labels=True,
+        n_infected_range=(10, 30),
+        exact_labels=False,  # rumor centrality labels — fast and accurate enough
         seed=1000,
     ))
     if verbose:

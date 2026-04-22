@@ -97,6 +97,14 @@ def run_sonic_method(G, Gn, k, args):
 
     verbose = not args.quiet
 
+    # Load DeepTrace model if requested
+    deeptrace_model = None
+    if args.source_method in ("deeptrace", "auto"):
+        from gnn.train import get_or_train_deeptrace
+        if verbose:
+            print("  Loading DeepTrace model...")
+        deeptrace_model = get_or_train_deeptrace()
+
     if args.method == "sonic":
         alpha_w = args.alpha_w
         beta_w = args.beta_w
@@ -107,6 +115,7 @@ def run_sonic_method(G, Gn, k, args):
             G, Gn, k,
             alpha_w=alpha_w, beta_w=beta_w,
             source_method=args.source_method,
+            deeptrace_model=deeptrace_model,
             K_sources=args.K_sources,
             ppr_alpha=args.ppr_alpha,
             adaptive=args.adaptive,
@@ -122,6 +131,7 @@ def run_sonic_method(G, Gn, k, args):
     elif args.method == "source_only":
         L, _ = sonic(G, Gn, k, alpha_w=0.0, beta_w=1.0,
                      source_method=args.source_method,
+                     deeptrace_model=deeptrace_model,
                      return_delta_rho=False, verbose=verbose)
         return L
 
