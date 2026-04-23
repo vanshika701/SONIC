@@ -2,12 +2,16 @@
 Baseline immunization strategies for comparison with SONIC / SPP.
 
 Baselines:
-1. Random       — random node removal (lower bound)
-2. Degree       — remove highest out-degree nodes
-3. Katz         — remove highest Katz centrality nodes
-4. DINO         — structural-only greedy KSCC (uniform tau, SPP reduces to degree proxy)
-5. SourceOnly   — pure source-risk selection (tau-ranked, skip KSCC)
-6. Betweenness  — remove highest betweenness centrality nodes
+1. Random               — random node removal (lower bound)
+2. Degree               — remove highest out-degree nodes
+3. HITS (Authority)     — remove highest HITS authority-score nodes
+                          (Kleinberg 1999; no training required)
+4. HITS (Hub)           — remove highest HITS hub-score nodes
+5. Acquaintance         — immunize neighbors of random nodes
+                          (friendship-paradox exploit; no training required)
+6. SourceOnly           — pure source-risk selection (τ-ranked, skip KSCC)
+7. Betweenness          — remove highest betweenness centrality nodes
+                          (expensive; disabled by default on large graphs)
 """
 
 import numpy as np
@@ -41,24 +45,156 @@ def degree_immunization(G, k):
     return nodes[:k]
 
 
-def katz_immunization(G, k, beta=0.01):
-    """
-    Select top-k nodes by Katz centrality.
-    beta should be < 1/spectral_radius(G) for convergence.
-    Falls back to smaller beta if needed.
-    """
-    rho = spectral_radius(G)
-    if rho > 0 and beta >= 1.0 / rho:
-        beta = 0.9 / rho
+# ---------------------------------------------------------------------------
+# HITS baselines  (Kleinberg 1999 — no training required)
+# ---------------------------------------------------------------------------
 
+def hits_authority_immunization(G, k, max_iter=1000, tol=1e-6):
+    """
+    Select top-k nodes by HITS *authority* score.
+
+    In epidemic containment, authority nodes receive many links from
+    high-hub nodes — they are the "targets" that spreading hubs point
+    to, making them critical bridge points for propagation.
+
+    Uses NetworkX power-iteration HITS.  O(|E| · iterations).
+    Falls back to in-degree if HITS fails to converge.
+
+    Parameters
+    ----------
+    G        : nx.DiGraph
+    k        : int
+    max_iter : int
+    tol      : float
+
+    Returns
+    -------
+    list of k node ids
+    """
     try:
-        katz = nx.katz_centrality_numpy(G, alpha=beta, normalized=True)
-    except Exception:
-        # Fall back to degree if Katz fails on disconnected/trivial graphs
-        return degree_immunization(G, k)
+        _, authorities = nx.hits(G, max_iter=max_iter, tol=tol, normalized=True)
+        nodes = sorted(authorities, key=authorities.get, reverse=True)
+        return nodes[:k]
+    except nx.PowerIterationFailedConvergence:
+        # Fallback: in-degree as authority proxy
+        nodes = sorted(G.nodes(), key=lambda v: G.in_degree(v), reverse=True)
+        return nodes[:k]
 
-    nodes = sorted(katz, key=katz.get, reverse=True)
-    return nodes[:k]
+
+def hits_hub_immunization(G, k, max_iter=1000, tol=1e-6):
+    """
+    Select top-k nodes by HITS *hub* score.
+
+    Hub nodes point to many high-authority nodes — they are the primary
+    spreaders in a directed epidemic network.  Removing them directly
+    disrupts multi-hop transmission chains.
+
+    Falls back to out-degree if HITS fails to converge.
+
+    Parameters
+    ----------
+    G        : nx.DiGraph
+    k        : int
+    max_iter : int
+    tol      : float
+
+    Returns
+    -------
+    list of k node ids
+    """
+    try:
+        hubs, _ = nx.hits(G, max_iter=max_iter, tol=tol, normalized=True)
+        nodes = sorted(hubs, key=hubs.get, reverse=True)
+        return nodes[:k]
+    except nx.PowerIterationFailedConvergence:
+        # Fallback: out-degree as hub proxy
+        nodes = sorted(G.nodes(), key=lambda v: G.out_degree(v), reverse=True)
+        return nodes[:k]
+
+
+# ---------------------------------------------------------------------------
+# Acquaintance Immunization  (Cohen et al. 2003 — no training required)
+# ---------------------------------------------------------------------------
+
+def acquaintance_immunization(G, k, seed=42):
+    """
+    Acquaintance Immunization (Cohen, Havlin & ben-Avraham, PRL 2003).
+
+    Exploits the *friendship paradox*: a random neighbor of a random node
+    is statistically more connected than the random node itself.
+
+    Algorithm
+    ---------
+    1. Sample k random "probe" nodes (with replacement allowed).
+    2. For each probe, follow one random *outgoing* edge (or incoming if
+       no out-edges) to land on a neighbor.
+    3. Collect the k unique neighbor-targets as the immunization set.
+       If fewer than k unique targets are found, fill with degree fallback.
+
+    Complexity: O(k + |degree lookups|) — effectively O(k).
+    No model training required.
+
+    Parameters
+    ----------
+    G    : nx.DiGraph
+    k    : int
+    seed : int
+
+    Returns
+    -------
+    list of k node ids
+    """
+    rng = np.random.default_rng(seed)
+    nodes = list(G.nodes())
+    n = len(nodes)
+
+    immunized = set()
+    max_attempts = k * 10  # prevent infinite loop on sparse graphs
+    attempts = 0
+
+    while len(immunized) < k and attempts < max_attempts:
+        attempts += 1
+        # Step 1: pick a random probe node
+        probe = nodes[rng.integers(0, n)]
+
+        # Step 2: follow a random outgoing edge (friendship-paradox exploit)
+        out_nbrs = list(G.successors(probe))
+        if out_nbrs:
+            target = out_nbrs[rng.integers(0, len(out_nbrs))]
+        else:
+            # No out-edges: try incoming neighbors
+            in_nbrs = list(G.predecessors(probe))
+            if in_nbrs:
+                target = in_nbrs[rng.integers(0, len(in_nbrs))]
+            else:
+                continue  # isolated node — skip
+
+        if target not in immunized:
+            immunized.add(target)
+
+    # Fill up to k if not enough unique targets found (sparse graph edge case)
+    if len(immunized) < k:
+        fallback = degree_immunization(G, k)
+        for v in fallback:
+            if len(immunized) >= k:
+                break
+            immunized.add(v)
+
+    return list(immunized)[:k]
+
+
+# ---------------------------------------------------------------------------
+# SONIC ablation variants
+# ---------------------------------------------------------------------------
+
+def source_only(G, Gn, k, **kwargs):
+    """SourceOnly: select top-k nodes purely by E-PPR SourceRisk (tau)."""
+    from algorithms.source_inference import infer_source_posterior
+    from algorithms.eppr import source_risk as compute_sr
+    pi = infer_source_posterior(Gn=Gn, method="rumor", G=G)
+    tau = compute_sr(G, pi, K=10, alpha=0.15)
+    sorted_nodes = sorted(tau, key=tau.get, reverse=True)
+    return sorted_nodes[:k]
 
 
 def betweenness_immunization(G, k, k_approx=None):
@@ -72,34 +208,6 @@ def betweenness_immunization(G, k, k_approx=None):
         bc = nx.betweenness_centrality(G, normalized=True)
     nodes = sorted(bc, key=bc.get, reverse=True)
     return nodes[:k]
-
-
-# ---------------------------------------------------------------------------
-# SONIC ablation variants
-# ---------------------------------------------------------------------------
-
-def dino_only(G, Gn, k, **kwargs):
-    """
-    DINO structural baseline: greedy KSCC immunization with uniform tau.
-    Uniform source_risk removes the source-risk signal, leaving a
-    Katz-weighted structural selector — closest equivalent to the
-    original DINO heuristic within the SPP framework.
-    """
-    # Uniform tau → SPP reduces to pure Katz / structural order
-    uniform_tau = {v: 1.0 for v in G.nodes()}
-    result = spp_selection(G, k, source_risk=uniform_tau,
-                           return_delta_rho=False, **kwargs)
-    return result
-
-
-def source_only(G, Gn, k, **kwargs):
-    """SourceOnly: select top-k nodes purely by E-PPR SourceRisk (tau)."""
-    from algorithms.source_inference import infer_source_posterior
-    from algorithms.eppr import source_risk as compute_sr
-    pi = infer_source_posterior(Gn=Gn, method="rumor", G=G)
-    tau = compute_sr(G, pi, K=10, alpha=0.15)
-    sorted_nodes = sorted(tau, key=tau.get, reverse=True)
-    return sorted_nodes[:k]
 
 
 # ---------------------------------------------------------------------------
@@ -125,13 +233,14 @@ def run_all_baselines(G, Gn, k, seed=42, verbose=True, run_betweenness=False):
     results = {}
 
     methods = {
-        "Random":       lambda: random_immunization(G, k, seed=seed),
-        "Degree":       lambda: degree_immunization(G, k),
-        "Katz":         lambda: katz_immunization(G, k),
-        "DINO":         lambda: dino_only(G, Gn, k),
-        "SourceOnly":   lambda: source_only(G, Gn, k),
-        "SPP":          lambda: sonic(G, Gn, k, source_method="rumor",
-                                      return_delta_rho=False),
+        "Random":           lambda: random_immunization(G, k, seed=seed),
+        "Degree":           lambda: degree_immunization(G, k),
+        "HITS-Authority":   lambda: hits_authority_immunization(G, k),
+        "HITS-Hub":         lambda: hits_hub_immunization(G, k),
+        "Acquaintance":     lambda: acquaintance_immunization(G, k, seed=seed),
+        "SourceOnly":       lambda: source_only(G, Gn, k),
+        "SPP":              lambda: sonic(G, Gn, k, source_method="rumor",
+                                         return_delta_rho=False),
     }
 
     if run_betweenness:
