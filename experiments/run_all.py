@@ -23,8 +23,8 @@ from data.loaders import load_dataset
 from data.synthetic import (
     make_random_graph, simulate_si, generate_training_batch
 )
-from algorithms.dino import benchmark_hiv
-from algorithms.sonic import sonic
+from algorithms.spp import spectral_radius
+from algorithms.sonic import sonic, sonic_sweep
 from evaluation.metrics import evaluate_method, print_results_table
 from experiments.baselines import run_all_baselines, evaluate_baselines
 from experiments.ablation import (
@@ -41,8 +41,6 @@ from gnn.train import get_or_train_deeptrace
 def run_experiment(
     dataset_name,
     budgets,
-    alpha_w=0.5,
-    beta_w=0.5,
     source_method="rumor",
     run_sis=True,
     run_baselines=True,
@@ -62,11 +60,14 @@ def run_experiment(
 
     print(f"\n{'='*70}")
     print(f"  Dataset: {dataset_name.upper()}  |  budgets: {budgets}")
-    print(f"  αw={alpha_w}  βw={beta_w}  source_method={source_method}")
+    print(f"  source_method={source_method}  pipeline=SPP")
     print(f"{'='*70}")
 
     # Load graph
     G = load_dataset(dataset_name)
+    if G is None:
+        print(f"  [skip] no graph for {dataset_name} (missing data file)")
+        return []
     n, m = G.number_of_nodes(), G.number_of_edges()
     print(f"  Graph: |V|={n}  |E|={m}")
 
@@ -95,7 +96,6 @@ def run_experiment(
         t0 = time.time()
         L_sonic, dr_sonic = sonic(
             G, Gn, k,
-            alpha_w=alpha_w, beta_w=beta_w,
             source_method=source_method,
             deeptrace_model=model,
             return_delta_rho=True,
@@ -140,14 +140,17 @@ def run_experiment(
 
     # Ablation
     if run_ablation:
-        print("\n--- βw Ablation ---")
-        abl_df = ablation_beta_sweep(G, Gn, k=budgets[-1],
-                                      run_sis=False,
-                                      source_method=source_method,
-                                      verbose=True)
-        print_ablation_table(abl_df, title=f"{dataset_name} βw Ablation")
-        abl_path = Path(results_dir) / f"{dataset_name}_ablation.csv"
-        abl_df.to_csv(abl_path, index=False)
+        print("\n--- K_sources Ablation ---")
+        abl_results = sonic_sweep(G, Gn, k=budgets[-1],
+                                  source_method=source_method,
+                                  verbose=True)
+        abl_path = Path(results_dir) / f"{dataset_name}_spp_ablation.csv"
+        import csv
+        with open(abl_path, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["K_sources", "delta_rho"])
+            for ks, _L, dr in abl_results:
+                w.writerow([ks, dr])
         print(f"  Ablation saved → {abl_path}")
 
     return all_metrics
@@ -159,20 +162,41 @@ def run_experiment(
 
 def run_hiv_benchmark(budgets=None, verbose=True):
     """
-    Validate DINO numbers on HIV network.
-    Expected: Δρ ≈ 4.59 at k=100, 5.70 at k=300.
+    Run SPP on HIV network for multiple budgets.
     """
     if budgets is None:
         budgets = [100, 200, 300]
 
-    print("\n=== HIV Benchmark (DINO paper Table 2) ===")
+    print("\n=== HIV Benchmark (SPP) ===")
+    from algorithms.source_inference import infer_source_posterior
+    from algorithms.eppr import source_risk
+    from algorithms.spp import spp_selection, spectral_radius
+    from data.loaders import load_dataset
+    from data.synthetic import simulate_si
+
     G = load_dataset("hiv")
-    results = benchmark_hiv(G, budgets=budgets)
-    print("\nk     Δρ      ρ_before  ρ_after")
-    print("-" * 35)
-    for k, (dr, rb, ra) in results.items():
-        print(f"{k:<6}{dr:>8.4f}  {rb:>8.4f}  {ra:>8.4f}")
-    return results
+    if G is None:
+        print("[skip] HIV dataset not found")
+        return {}
+
+    source = max(G.nodes(), key=lambda v: G.in_degree(v))
+    Gn, _, _ = simulate_si(G, source=source, beta=0.3, max_steps=10)
+    if Gn.number_of_nodes() < 2:
+        Gn = G
+
+    pi = infer_source_posterior(Gn=Gn, method="rumor", G=G)
+    tau = source_risk(G, pi, K=10, alpha=0.15)
+
+    rho0 = spectral_radius(G)
+    print(f"Initial ρ = {rho0:.4f}")
+    print(f"{'Budget':>8} | {'Δρ':>8} | {'ρ_final':>8}")
+    print("-" * 32)
+    out = {}
+    for k in budgets:
+        _, delta = spp_selection(G, k, tau, return_delta_rho=True)
+        print(f"{k:>8} | {delta:>8.2f} | {rho0 - delta:>8.4f}")
+        out[k] = (delta, rho0, rho0 - delta)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -190,10 +214,10 @@ def run_synthetic_experiment(n=500, k=20, seed=42, verbose=True):
     if Gn.number_of_nodes() < 2:
         Gn = G
 
-    L, dr = sonic(G, Gn, k, alpha_w=0.5, beta_w=0.5,
-                  source_method="rumor", return_delta_rho=True, verbose=verbose)
+    L, dr = sonic(G, Gn, k, source_method="rumor",
+                  return_delta_rho=True, verbose=verbose)
 
-    print(f"  SONIC Δρ={dr:.4f}  |L|={len(L)}")
+    print(f"  SPP Δρ={dr:.4f}  |L|={len(L)}")
     return L, dr
 
 
@@ -202,23 +226,21 @@ def run_synthetic_experiment(n=500, k=20, seed=42, verbose=True):
 # ---------------------------------------------------------------------------
 
 def parse_args():
-    p = argparse.ArgumentParser(description="SONIC Experiment Runner")
+    p = argparse.ArgumentParser(description="SONIC/SPP Experiment Runner")
     p.add_argument("--dataset", default="hiv",
                    choices=["hiv", "reddit", "gnutella", "synthetic"],
                    help="Dataset to run experiments on")
     p.add_argument("--budgets", nargs="+", type=int, default=[50, 100, 200],
                    help="Immunization budgets k")
-    p.add_argument("--alpha_w", type=float, default=0.5)
-    p.add_argument("--beta_w",  type=float, default=0.5)
     p.add_argument("--source_method", default="rumor",
                    choices=["rumor", "deeptrace", "auto"])
     p.add_argument("--no_sis", action="store_true",
                    help="Skip SIS simulation (faster)")
     p.add_argument("--no_baselines", action="store_true")
     p.add_argument("--ablation", action="store_true",
-                   help="Run βw ablation sweep")
+                   help="Run K_sources ablation sweep")
     p.add_argument("--hiv_benchmark", action="store_true",
-                   help="Run HIV benchmark to validate DINO numbers")
+                   help="Run HIV benchmark")
     p.add_argument("--synthetic", action="store_true",
                    help="Run quick synthetic smoke-test")
     p.add_argument("--all", action="store_true",
@@ -245,8 +267,6 @@ def main():
         run_experiment(
             dataset_name=ds,
             budgets=args.budgets,
-            alpha_w=args.alpha_w,
-            beta_w=args.beta_w,
             source_method=args.source_method,
             run_sis=not args.no_sis,
             run_baselines=not args.no_baselines,

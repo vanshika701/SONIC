@@ -1,188 +1,178 @@
 """
 SONIC: Source-Oriented Network Immunization and Containment.
-Full Algorithm 1 from the SONIC paper.
 
-Combines:
-  Phase 1: Source posterior π via DeepTrace / Rumor Centrality
-  Phase 2: SourceRisk via Expected Personalized PageRank (E-PPR)
-  Phase 3: Composite scoring + KSCC immunization
+Refactored to use the Spectral Path-Product (SPP) algorithm instead of
+the additive heuristic (αw · Δρ + βw · SourceRisk).
 
-SONIC Eq. 7:
-  Score_SONIC(v) = αw · Δρ̃_spec(v) + βw · SourceRisk̃(v)
-  (tildes = min-max normalized to [0,1])
+Pipeline
+--------
+  Phase 1  —  Source Posterior π via DeepTrace GNN or Rumor Centrality
+  Phase 2  —  Source Risk τ(v) via Expected Personalized PageRank (E-PPR)
+  Phase 3  —  Spectral Path-Product (SPP) Optimization
+               SPP(v) = τ(v) × C_out(v)
+               maximised greedily within the KSCC
 
-Setting βw=0 recovers pure DINO.
-Setting αw=0 yields pure source-driven selection.
+Mathematical grounding
+----------------------
+Eigen-drop  Δρ ∝ u_i · v_i  (left × right eigenvector).
+
+  τ(v)     = E-PPR SourceRisk  →  left-eigenvector proxy (arrival probability)
+  C_out(v) = Downstream Katz  →  right-eigenvector proxy (spreading power)
 """
 
 import numpy as np
 import networkx as nx
 
-from algorithms.dino import (
+from algorithms.spp import (
     find_nontrivial_sccs,
     approx_spectral_radius,
-    compute_all_delta_rho,
     spectral_radius,
     _merge_sorted_sccs,
+    spp_selection,
 )
 from algorithms.source_inference import infer_source_posterior
-from algorithms.eppr import source_risk, entropy_gated_weights
+from algorithms.eppr import source_risk as compute_source_risk_eppr
 
 
 # ---------------------------------------------------------------------------
-# Min-max normalization
-# ---------------------------------------------------------------------------
-
-def _minmax_normalize(scores_dict):
-    """
-    Min-max normalize a dict of scores to [0, 1].
-    Returns new dict. Handles constant arrays (returns 0.5 for all).
-    """
-    if not scores_dict:
-        return {}
-    vals = np.array(list(scores_dict.values()), dtype=float)
-    v_min, v_max = vals.min(), vals.max()
-    if v_max - v_min < 1e-12:
-        return {k: 0.5 for k in scores_dict}
-    return {k: float((v - v_min) / (v_max - v_min)) for k, v in scores_dict.items()}
-
-
-# ---------------------------------------------------------------------------
-# SONIC Algorithm 1
+# SONIC Algorithm (SPP Edition)
 # ---------------------------------------------------------------------------
 
 def sonic(
     G,
     Gn,
     k,
-    alpha_w=0.5,
-    beta_w=0.5,
     source_method="auto",
     deeptrace_model=None,
     K_sources=10,
     ppr_alpha=0.15,
     adaptive=False,
-    auto_weights=False,
     return_delta_rho=True,
     verbose=False,
 ):
     """
-    SONIC Algorithm 1: Source-Oriented Network Immunization and Containment.
+    SONIC: Source-Oriented Network Immunization and Containment.
+
+    Phase 1  —  infer source posterior π over nodes in Gn
+    Phase 2  —  compute SourceRisk τ via E-PPR (seeded at top-K sources)
+    Phase 3  —  Spectral Path-Product (SPP) Optimization over the KSCC
 
     Parameters
     ----------
-    G               : nx.DiGraph, full network
-    Gn              : nx.DiGraph, observed infection subgraph (subset of G)
-    k               : int, immunization budget
-    alpha_w         : float, weight for structural term (Δρ_spec)
-    beta_w          : float, weight for SourceRisk term
-                      Must satisfy alpha_w + beta_w = 1.
-    source_method   : str, 'deeptrace', 'rumor', or 'auto'
-    deeptrace_model : DeepTraceGNN or None
-    K_sources       : int, top-K sources for E-PPR computation
-    ppr_alpha       : float, teleport probability for PPR
-    adaptive        : bool, if True recompute π after each removal (Eq. 10)
-    auto_weights    : bool, if True use entropy-gated weight auto-tuning (novelty)
-    return_delta_rho: bool
-    verbose         : bool
+    G                : nx.DiGraph, full network
+    Gn               : nx.DiGraph, observed infection subgraph (subset of G)
+    k                : int, immunisation budget
+    source_method    : str, 'deeptrace', 'rumor', or 'auto'
+    deeptrace_model  : DeepTraceGNN or None
+    K_sources        : int, top-K sources used for E-PPR
+    ppr_alpha        : float, teleport probability for PPR  (default 0.15)
+    adaptive         : bool, if True recompute π and τ after each removal
+    return_delta_rho : bool, if True return Δρ = ρ_before − ρ_after
+    verbose          : bool
 
     Returns
     -------
-    L          : list of immunized nodes
-    delta_rho  : float (only if return_delta_rho=True)
+    L         : list of immunised node ids (length <= k)
+    delta_rho : float  (only when return_delta_rho=True)
     """
-    assert abs(alpha_w + beta_w - 1.0) < 1e-6, "alpha_w + beta_w must equal 1"
-
     G_work = G.copy()
     L = []
 
     rho_initial = spectral_radius(G) if return_delta_rho else None
-    if verbose and rho_initial:
-        print(f"[SONIC] Initial ρ={rho_initial:.4f} | αw={alpha_w:.2f} βw={beta_w:.2f}")
+    if verbose and rho_initial is not None:
+        print(f"[SONIC] Initial ρ = {rho_initial:.4f}")
+        print(f"[SONIC] Pipeline: DeepTrace/RumorCentrality → E-PPR → "
+              "Spectral Path-Product (SPP) Optimization")
 
-    # -----------------------------------------------------------------------
-    # Phase 1: Source Posterior Inference (computed once, or adaptively)
-    # -----------------------------------------------------------------------
-    def _compute_pi(graph_for_source):
+    # -------------------------------------------------------------------
+    # Phase 1: Source Posterior Inference (π)
+    # -------------------------------------------------------------------
+    def _infer_pi(obs_graph):
         return infer_source_posterior(
-            Gn=graph_for_source,
+            Gn=obs_graph,
             model=deeptrace_model,
             method=source_method,
             G=G,
         )
 
-    pi = _compute_pi(Gn)
+    pi = _infer_pi(Gn)
+    if verbose:
+        top_src = max(pi, key=pi.get, default=None)
+        print(f"[SONIC] Phase 1 complete — top source: "
+              f"{top_src} (π={pi.get(top_src, 0):.4f})")
 
-    # Auto-tune weights from entropy if requested (novelty addition)
-    if auto_weights:
-        alpha_w, beta_w = entropy_gated_weights(pi, alpha_w, beta_w)
-        if verbose:
-            print(f"[SONIC] Auto-tuned weights: αw={alpha_w:.3f} βw={beta_w:.3f}")
+    # -------------------------------------------------------------------
+    # Phase 2: SourceRisk τ via E-PPR
+    # -------------------------------------------------------------------
+    def _compute_tau(g_work, pi_current):
+        return compute_source_risk_eppr(
+            g_work, pi_current, K=K_sources, alpha=ppr_alpha
+        )
 
-    # -----------------------------------------------------------------------
-    # Phase 2: SourceRisk via E-PPR (static, or re-computed adaptively)
-    # -----------------------------------------------------------------------
-    def _compute_source_risk(g_work, pi_current):
-        if beta_w < 1e-6:
-            # Pure DINO — skip SourceRisk computation entirely
-            return {v: 0.0 for v in g_work.nodes()}
-        return source_risk(g_work, pi_current, K=K_sources, alpha=ppr_alpha)
+    tau = _compute_tau(G_work, pi)
+    if verbose:
+        print(f"[SONIC] Phase 2 complete — E-PPR SourceRisk computed "
+              f"over {K_sources} top sources.")
 
-    sr = _compute_source_risk(G_work, pi)
+    # -------------------------------------------------------------------
+    # Phase 3: Spectral Path-Product (SPP) Optimization
+    # -------------------------------------------------------------------
+    if verbose:
+        print("[SONIC] Phase 3: Spectral Path-Product (SPP) Optimization")
 
-    # -----------------------------------------------------------------------
-    # Phase 3: SONIC composite scoring + KSCC immunization loop
-    # -----------------------------------------------------------------------
     S = find_nontrivial_sccs(G_work)
+    if verbose:
+        print(f"[SONIC] Non-trivial SCCs: {len(S)}, "
+              f"KSCC size = {len(S[0]) if S else 0}")
+              
+    global_alpha = 0.01
+    if S:
+        kscc_rho = spectral_radius(G_work.subgraph(S[0]))
+        global_alpha = min(0.95 / max(kscc_rho, 1e-9), 0.05)
 
     for step in range(k):
-        # Skip trivial SCCs
+        # Skip SCCs that have shrunk below threshold
         while S and len(S[0]) < 3:
             S.pop(0)
 
         if not S:
             if verbose:
-                print(f"[SONIC] No non-trivial SCCs remaining at step {step}. Stopping.")
+                print(f"[SONIC] No non-trivial SCCs remaining at step {step}. "
+                      "Stopping early.")
             break
 
         S1 = S.pop(0)
 
-        # Adaptive variant: recompute π and SourceRisk on updated graph
+        # Adaptive mode: refresh π and τ on reduced graph
         if adaptive and step > 0:
-            pi = _compute_pi(G_work.subgraph(
-                [v for v in Gn.nodes() if v in G_work]
-            ))
-            sr = _compute_source_risk(G_work, pi)
+            obs_nodes = [v for v in Gn.nodes() if v in G_work]
+            pi = _infer_pi(G_work.subgraph(obs_nodes))
+            tau = _compute_tau(G_work, pi)
 
-        # Compute Δρ_spec for all nodes in S1 (using G_work)
-        delta_rho_scores = compute_all_delta_rho(G_work.subgraph(S1))
+        # --- Run one SPP step on the current KSCC ---
+        # We delegate to spp_selection for a single-step subgraph selection
+        from algorithms.measures import compute_katz_out, spp_score
 
-        # Normalize both terms to [0,1]
-        dr_norm = _minmax_normalize(delta_rho_scores)
-        sr_s1 = {v: sr.get(v, 0.0) for v in S1}
-        sr_norm = _minmax_normalize(sr_s1)
+        subG = G_work.subgraph(S1)
+        katz_out = compute_katz_out(subG, alpha=global_alpha)
+        tau_s1 = {v: tau.get(v, 0.0) for v in S1}
+        scores = spp_score(tau_s1, katz_out)
 
-        # Composite score (higher = higher priority for removal)
-        best_v = None
-        best_score = -1.0
-
-        for v in S1:
-            score = alpha_w * dr_norm.get(v, 0.0) + beta_w * sr_norm.get(v, 0.0)
-            if score > best_score:
-                best_score = score
-                best_v = v
-
+        best_v = max(scores, key=lambda v: scores[v], default=None)
         if best_v is None:
             continue
+
+        if verbose:
+            print(f"[SONIC][SPP] Step {step + 1}/{k}: "
+                  f"selected node {best_v}  "
+                  f"SPP={scores[best_v]:.6f}  "
+                  f"τ={tau_s1[best_v]:.4f}  "
+                  f"C_out={katz_out.get(best_v, 0.0):.4f}")
 
         L.append(best_v)
         G_work.remove_node(best_v)
 
-        if verbose:
-            print(f"[SONIC] Step {step+1}/{k}: removed node {best_v}, "
-                  f"score={best_score:.4f}")
-
-        # Reinsert new SCCs from S1\{v*}
+        # Re-insert child SCCs
         remaining = S1 - {best_v}
         if len(remaining) >= 3:
             new_sccs = find_nontrivial_sccs(G_work.subgraph(remaining))
@@ -192,39 +182,38 @@ def sonic(
         rho_final = spectral_radius(G_work)
         delta = rho_initial - rho_final
         if verbose:
-            print(f"[SONIC] Final ρ={rho_final:.4f}, Δρ={delta:.4f}")
+            print(f"[SONIC] Final ρ = {rho_final:.4f}  Δρ = {delta:.4f}")
         return L, delta
 
     return L
 
 
 # ---------------------------------------------------------------------------
-# Convenience: run SONIC with a specific βw value
+# Convenience: ablation sweep over K_sources values
 # ---------------------------------------------------------------------------
 
-def sonic_sweep(G, Gn, k, beta_w_values=None, **kwargs):
+def sonic_sweep(G, Gn, k, K_sources_values=None, **kwargs):
     """
-    Run SONIC for multiple βw values (ablation study).
+    Run SONIC for multiple K_sources values (ablation study).
 
     Parameters
     ----------
-    G, Gn, k : as in sonic()
-    beta_w_values : list of floats, default [0, 0.1, ..., 1.0]
-    **kwargs : passed to sonic()
+    G, Gn, k      : as in sonic()
+    K_sources_values : list of ints, default [5, 10, 20, 50]
+    **kwargs       : forwarded to sonic()
 
     Returns
     -------
-    results : list of (beta_w, L, delta_rho)
+    results : list of (K_sources, L, delta_rho)
     """
-    if beta_w_values is None:
-        beta_w_values = [round(x * 0.1, 1) for x in range(11)]
+    if K_sources_values is None:
+        K_sources_values = [5, 10, 20, 50]
 
     results = []
-    for bw in beta_w_values:
-        aw = round(1.0 - bw, 1)
-        L, delta = sonic(G, Gn, k, alpha_w=aw, beta_w=bw,
+    for ks in K_sources_values:
+        L, delta = sonic(G, Gn, k, K_sources=ks,
                          return_delta_rho=True, **kwargs)
-        results.append((bw, L, delta))
-        print(f"  βw={bw:.1f} | Δρ={delta:.4f}")
+        results.append((ks, L, delta))
+        print(f"  K_sources={ks:3d} | Δρ={delta:.4f}")
 
     return results

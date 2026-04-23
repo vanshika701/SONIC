@@ -11,7 +11,7 @@ Metrics from SONIC paper Section VII:
 
 import numpy as np
 import networkx as nx
-from algorithms.dino import spectral_radius
+from algorithms.spp import spectral_radius
 
 
 # ---------------------------------------------------------------------------

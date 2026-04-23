@@ -1,2 +1,35 @@
+# Environments
 venv/
+env/
+.env
+
+# MacOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Jupyter
+.ipynb_checkpoints
+
+# Results and Outputs
+results/
+*.json
+*.csv
+results.zip
+
+# Large Data Files
 data/raw/soc-redditHyperlinks-body.tsv
+data/raw/*.gz
+data/raw/*.txt
+
+# IDEs
+.idea/
+.vscode/
+
+# Checkpoints/Models
+checkpoints/
