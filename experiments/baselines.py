@@ -1,18 +1,18 @@
 """
-Baseline immunization strategies for comparison with SONIC.
+Baseline immunization strategies for comparison with SONIC / SPP.
 
 Baselines:
 1. Random       — random node removal (lower bound)
 2. Degree       — remove highest out-degree nodes
 3. Katz         — remove highest Katz centrality nodes
-4. DINO-only    — αw=1, βw=0 (structural only)
-5. SourceOnly   — αw=0, βw=1 (source-risk only)
+4. DINO         — structural-only greedy KSCC (uniform tau, SPP reduces to degree proxy)
+5. SourceOnly   — pure source-risk selection (tau-ranked, skip KSCC)
 6. Betweenness  — remove highest betweenness centrality nodes
 """
 
 import numpy as np
 import networkx as nx
-from algorithms.dino import dino, spectral_radius
+from algorithms.spp import spectral_radius, spp_selection
 from algorithms.sonic import sonic
 
 
@@ -79,15 +79,27 @@ def betweenness_immunization(G, k, k_approx=None):
 # ---------------------------------------------------------------------------
 
 def dino_only(G, Gn, k, **kwargs):
-    """DINO: αw=1, βw=0. Pure structural immunization."""
-    return sonic(G, Gn, k, alpha_w=1.0, beta_w=0.0,
-                 return_delta_rho=False, **kwargs)
+    """
+    DINO structural baseline: greedy KSCC immunization with uniform tau.
+    Uniform source_risk removes the source-risk signal, leaving a
+    Katz-weighted structural selector — closest equivalent to the
+    original DINO heuristic within the SPP framework.
+    """
+    # Uniform tau → SPP reduces to pure Katz / structural order
+    uniform_tau = {v: 1.0 for v in G.nodes()}
+    result = spp_selection(G, k, source_risk=uniform_tau,
+                           return_delta_rho=False, **kwargs)
+    return result
 
 
 def source_only(G, Gn, k, **kwargs):
-    """SourceOnly: αw=0, βw=1. Pure source-risk immunization."""
-    return sonic(G, Gn, k, alpha_w=0.0, beta_w=1.0,
-                 return_delta_rho=False, **kwargs)
+    """SourceOnly: select top-k nodes purely by E-PPR SourceRisk (tau)."""
+    from algorithms.source_inference import infer_source_posterior
+    from algorithms.eppr import source_risk as compute_sr
+    pi = infer_source_posterior(Gn=Gn, method="rumor", G=G)
+    tau = compute_sr(G, pi, K=10, alpha=0.15)
+    sorted_nodes = sorted(tau, key=tau.get, reverse=True)
+    return sorted_nodes[:k]
 
 
 # ---------------------------------------------------------------------------
@@ -118,6 +130,8 @@ def run_all_baselines(G, Gn, k, seed=42, verbose=True, run_betweenness=False):
         "Katz":         lambda: katz_immunization(G, k),
         "DINO":         lambda: dino_only(G, Gn, k),
         "SourceOnly":   lambda: source_only(G, Gn, k),
+        "SPP":          lambda: sonic(G, Gn, k, source_method="rumor",
+                                      return_delta_rho=False),
     }
 
     if run_betweenness:
