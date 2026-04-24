@@ -17,7 +17,6 @@ Baselines:
 import numpy as np
 import networkx as nx
 from algorithms.spp import spectral_radius, spp_selection
-from algorithms.sonic import sonic
 
 
 # ---------------------------------------------------------------------------
@@ -239,8 +238,6 @@ def run_all_baselines(G, Gn, k, seed=42, verbose=True, run_betweenness=False):
         "HITS-Hub":         lambda: hits_hub_immunization(G, k),
         "Acquaintance":     lambda: acquaintance_immunization(G, k, seed=seed),
         "SourceOnly":       lambda: source_only(G, Gn, k),
-        "SPP":              lambda: sonic(G, Gn, k, source_method="rumor",
-                                         return_delta_rho=False),
     }
 
     if run_betweenness:
