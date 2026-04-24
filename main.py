@@ -40,7 +40,7 @@ def parse_args():
 
     # Method
     p.add_argument("--method", default="sonic",
-                   choices=["sonic", "spp", "source_only", "degree",
+                   choices=["sonic", "spp", "dino", "source_only", "degree",
                             "katz", "random", "betweenness"],
                    help="Immunisation method (default: sonic)")
 
@@ -111,6 +111,14 @@ def run_method(G, Gn, k, args):
             return_delta_rho=True,
             verbose=verbose,
         )
+        return L
+
+    # ----------------------------------------------------------------
+    # DINO (He et al. 2025) — pure structural SPP
+    # ----------------------------------------------------------------
+    elif args.method == "dino":
+        uniform_tau = {v: 1.0 for v in G.nodes()}
+        L, dr = spp_selection(G, k, uniform_tau, return_delta_rho=True, verbose=verbose)
         return L
 
     # ----------------------------------------------------------------
