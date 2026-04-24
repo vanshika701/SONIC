@@ -44,6 +44,23 @@ def degree_immunization(G, k):
     return nodes[:k]
 
 
+def katz_immunization(G, k):
+    """
+    Select top-k nodes by Katz centrality.
+    """
+    rho = spectral_radius(G)
+    alpha = min(0.9 / max(rho, 1e-9), 0.01)
+    try:
+        katz = nx.katz_centrality(G, alpha=alpha, normalized=True,
+                                  max_iter=1000, tol=1e-6)
+    except (nx.PowerIterationFailedConvergence, Exception):
+        # Fallback to out-degree
+        katz = {v: float(G.out_degree(v)) for v in G.nodes()}
+    
+    nodes = sorted(katz, key=katz.get, reverse=True)
+    return nodes[:k]
+
+
 # ---------------------------------------------------------------------------
 # HITS baselines  (Kleinberg 1999 — no training required)
 # ---------------------------------------------------------------------------
