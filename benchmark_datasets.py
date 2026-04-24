@@ -72,10 +72,6 @@ def run_method(name, G, Gn, tau, k):
     if name == "SPP (ours)":
         L, delta = spp_selection(G, k, tau, return_delta_rho=True, verbose=False)
 
-    elif name == "DINO (structural)":
-        uniform_tau = {v: 1.0 for v in G.nodes()}
-        L, delta = spp_selection(G, k, uniform_tau, return_delta_rho=True, verbose=False)
-
     elif name == "Degree":
         L = degree_immunization(G, k)
         delta = _eval_delta(G, L)

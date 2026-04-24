@@ -151,12 +151,15 @@ def sonic(
 
         # --- Run one SPP step on the current KSCC ---
         # We delegate to spp_selection for a single-step subgraph selection
-        from algorithms.measures import compute_katz_out, spp_score
+        from algorithms.measures import compute_left_eigenvec, compute_katz_out, spp_score
 
         subG = G_work.subgraph(S1)
+        # True left eigenvector of the current KSCC subgraph
+        left_vec = compute_left_eigenvec(subG)
         katz_out = compute_katz_out(subG, alpha=global_alpha)
         tau_s1 = {v: tau.get(v, 0.0) for v in S1}
-        scores = spp_score(tau_s1, katz_out)
+        # SPP_v2 = u_i · v_i · (1 + γ·τ̃)
+        scores = spp_score(left_vec, katz_out, source_risk=tau_s1)
 
         best_v = max(scores, key=lambda v: scores[v], default=None)
         if best_v is None:
@@ -166,8 +169,9 @@ def sonic(
             print(f"[SONIC][SPP] Step {step + 1}/{k}: "
                   f"selected node {best_v}  "
                   f"SPP={scores[best_v]:.6f}  "
-                  f"τ={tau_s1[best_v]:.4f}  "
-                  f"C_out={katz_out.get(best_v, 0.0):.4f}")
+                  f"u_i={left_vec.get(best_v, 0.0):.4f}  "
+                  f"C_out={katz_out.get(best_v, 0.0):.4f}  "
+                  f"τ={tau_s1.get(best_v, 0.0):.4f}")
 
         L.append(best_v)
         G_work.remove_node(best_v)

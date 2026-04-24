@@ -26,7 +26,7 @@ import numpy as np
 import scipy.sparse as sp
 import scipy.sparse.linalg as spla
 
-from algorithms.measures import compute_katz_out, spp_score
+from algorithms.measures import compute_left_eigenvec, compute_katz_out, spp_score
 
 
 # ---------------------------------------------------------------------------
@@ -187,14 +187,17 @@ class SPPSelection:
             S1 = S.pop(0)          # current KSCC (set of node ids)
             subG = G_work.subgraph(S1)
 
-            # --- Compute Downstream Katz Centrality on this subgraph ---
+            # --- Compute true left eigenvector u_i of this subgraph ---
+            left_vec = compute_left_eigenvec(subG)
+
+            # --- Compute Downstream Katz Centrality (right eigenvector v_i) ---
             katz_out = compute_katz_out(subG, alpha=global_alpha)
 
-            # --- Restrict τ to nodes in S1 ---
+            # --- Restrict τ to nodes in S1 (used only as soft bonus) ---
             tau_s1 = {v: self.source_risk.get(v, 0.0) for v in S1}
 
-            # --- SPP score for every node in S1 ---
-            scores = spp_score(tau_s1, katz_out)
+            # --- SPP_v2 = u_i · v_i · (1 + γ·τ̃) ---
+            scores = spp_score(left_vec, katz_out, source_risk=tau_s1)
 
             # --- Select node v* = argmax SPP(v) ---
             best_v = max(scores, key=lambda v: scores[v], default=None)
@@ -205,8 +208,9 @@ class SPPSelection:
                 print(f"[SPP] Step {step + 1}/{self.k}: "
                       f"selected node {best_v}  "
                       f"SPP={scores[best_v]:.6f}  "
-                      f"τ={tau_s1[best_v]:.4f}  "
-                      f"C_out={katz_out.get(best_v, 0.0):.4f}")
+                      f"u_i={left_vec.get(best_v, 0.0):.4f}  "
+                      f"C_out={katz_out.get(best_v, 0.0):.4f}  "
+                      f"τ={tau_s1.get(best_v, 0.0):.4f}")
 
             L.append(best_v)
             G_work.remove_node(best_v)
