@@ -1,8 +1,8 @@
 """
 SPP Benchmark: Spectral Path-Product vs. baseline methods on real-world datasets.
 
-Runs SPP, DINO, Degree, Katz, SourceOnly, and Random on the main datasets:
-HIV, Gnutella, and Reddit. Prints a summary comparison table.
+Runs SPP, DINO, Degree, HITS-Authority, HITS-Hub, Acquaintance, SourceOnly,
+and Random on the main datasets: HIV, Gnutella, and Reddit. Prints a summary comparison table.
 
 Run:
     python benchmark_datasets.py
@@ -52,6 +52,19 @@ def simulate_epidemic(G, seed=42):
     return Gn, order
 
 
+from experiments.baselines import (
+    random_immunization, degree_immunization,
+    hits_authority_immunization, hits_hub_immunization,
+    acquaintance_immunization, source_only,
+)
+
+def _eval_delta(G, L):
+    rho_b = spectral_radius(G)
+    G2 = G.copy()
+    G2.remove_nodes_from(L)
+    return rho_b - spectral_radius(G2)
+
+
 def run_method(name, G, Gn, tau, k):
     """Run one immunisation method and return (nodes_removed, delta_rho, runtime_s)."""
     t0 = time.time()
@@ -64,42 +77,30 @@ def run_method(name, G, Gn, tau, k):
         L, delta = spp_selection(G, k, uniform_tau, return_delta_rho=True, verbose=False)
 
     elif name == "Degree":
-        nodes = sorted(G.nodes(), key=lambda v: (G.out_degree(v), G.in_degree(v)), reverse=True)
-        L = nodes[:k]
-        rho_b = spectral_radius(G)
-        G2 = G.copy()
-        G2.remove_nodes_from(L)
-        delta = rho_b - spectral_radius(G2)
+        L = degree_immunization(G, k)
+        delta = _eval_delta(G, L)
 
-    elif name == "Katz":
-        rho = spectral_radius(G)
-        alpha = min(0.9 / max(rho, 1e-9), 0.01)
-        try:
-            katz = nx.katz_centrality(G, alpha=alpha, normalized=True,
-                                      max_iter=1000, tol=1e-6)
-        except nx.PowerIterationFailedConvergence:
-            katz = {v: float(G.out_degree(v)) for v in G.nodes()}
-        L = sorted(katz, key=katz.get, reverse=True)[:k]
-        rho_b = spectral_radius(G)
-        G2 = G.copy()
-        G2.remove_nodes_from(L)
-        delta = rho_b - spectral_radius(G2)
+    elif name == "HITS-Authority":
+        L = hits_authority_immunization(G, k)
+        delta = _eval_delta(G, L)
+
+    elif name == "HITS-Hub":
+        L = hits_hub_immunization(G, k)
+        delta = _eval_delta(G, L)
+
+    elif name == "Acquaintance":
+        L = acquaintance_immunization(G, k)
+        delta = _eval_delta(G, L)
 
     elif name == "SourceOnly":
         L = sorted(tau, key=tau.get, reverse=True)[:k]
-        rho_b = spectral_radius(G)
-        G2 = G.copy()
-        G2.remove_nodes_from(L)
-        delta = rho_b - spectral_radius(G2)
+        delta = _eval_delta(G, L)
 
     elif name == "Random":
         rng = np.random.default_rng(99)
         nodes = list(G.nodes())
         L = list(rng.choice(nodes, size=min(k, len(nodes)), replace=False))
-        rho_b = spectral_radius(G)
-        G2 = G.copy()
-        G2.remove_nodes_from(L)
-        delta = rho_b - spectral_radius(G2)
+        delta = _eval_delta(G, L)
 
     else:
         raise ValueError(name)
@@ -112,7 +113,7 @@ def run_method(name, G, Gn, tau, k):
 # Runner
 # ─────────────────────────────────────────────────────────────────────────────
 
-METHODS = ["SPP (ours)", "DINO (structural)", "Degree", "Katz", "SourceOnly", "Random"]
+METHODS = ["SPP (ours)", "DINO (structural)", "Degree", "HITS-Authority", "HITS-Hub", "Acquaintance", "SourceOnly", "Random"]
 
 # Define graphs and their target k-budget (roughly scalable with |V|)
 DATASETS = {
