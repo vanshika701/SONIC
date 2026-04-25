@@ -72,6 +72,11 @@ def run_method(name, G, Gn, tau, k):
     if name == "SPP (ours)":
         L, delta = spp_selection(G, k, tau, return_delta_rho=True, verbose=False)
 
+    elif name == "DINO (structural)":
+        from experiments.baselines import dino_immunization
+        L = dino_immunization(G, k)
+        delta = _eval_delta(G, L)
+
     elif name == "Degree":
         L = degree_immunization(G, k)
         delta = _eval_delta(G, L)
