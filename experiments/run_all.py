@@ -120,11 +120,26 @@ def run_experiment(
             )
             all_metrics.extend(bm)
 
-    # Print table
-    print_results_table(all_metrics, budgets=budgets)
+    # Create a unique timestamped run directory
+    import datetime
+    import os
+    import io
+    from contextlib import redirect_stdout
+    import subprocess
+    
+    timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    run_dir = Path(results_dir) / f"{dataset_name}_run_{timestamp}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    
+    out_path = run_dir / "results.json"
+    table_path = run_dir / "summary_table.txt"
 
-    # Save
-    out_path = Path(results_dir) / f"{dataset_name}_results.json"
+    # Print table to both console and text file
+    print_results_table(all_metrics, budgets=budgets)
+    with open(table_path, "w") as f:
+        with redirect_stdout(f):
+            print_results_table(all_metrics, budgets=budgets)
+
     # Convert numpy types for JSON serialization
     def _to_py(x):
         if isinstance(x, (np.integer,)): return int(x)
@@ -136,7 +151,14 @@ def run_experiment(
                 for m in all_metrics]
     with open(out_path, "w") as f:
         json.dump(saveable, f, indent=2)
-    print(f"\n  Results saved → {out_path}")
+    print(f"\n  Results & Table saved → {run_dir}/")
+    
+    # Auto-generate IEEE plots for this run
+    print("  Auto-generating IEEE plots...")
+    try:
+        subprocess.run(["python", "generate_ieee_plots.py", str(out_path), str(run_dir)], check=True)
+    except Exception as e:
+        print(f"  Failed to generate plots: {e}")
 
     # Ablation
     if run_ablation:
