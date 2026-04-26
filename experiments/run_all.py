@@ -250,7 +250,7 @@ def run_synthetic_experiment(n=500, k=20, seed=42, verbose=True):
 def parse_args():
     p = argparse.ArgumentParser(description="SONIC/SPP Experiment Runner")
     p.add_argument("--dataset", default="hiv",
-                   choices=["hiv", "reddit", "gnutella", "synthetic"],
+                   choices=["hiv", "reddit", "gnutella", "synthetic", "enron"],
                    help="Dataset to run experiments on")
     p.add_argument("--budgets", nargs="+", type=int, default=[50, 100, 200],
                    help="Immunization budgets k")
@@ -283,7 +283,7 @@ def main():
         run_synthetic_experiment()
         return
 
-    datasets = ["hiv", "reddit", "gnutella"] if args.all else [args.dataset]
+    datasets = ["hiv", "reddit", "gnutella", "enron"] if args.all else [args.dataset]
 
     for ds in datasets:
         run_experiment(

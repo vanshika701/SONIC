@@ -181,6 +181,40 @@ def load_gnutella(path=None):
 
 
 # ---------------------------------------------------------------------------
+# Enron Email Network
+# ---------------------------------------------------------------------------
+
+def load_enron(path=None, max_nodes=35000):
+    """
+    Load Enron email network as nx.DiGraph from pre-processed edgelist.
+    """
+    if path is None:
+        path = os.path.join(DATA_DIR, "enron_edgelist.txt")
+        
+    if not os.path.exists(path):
+        print(f"[Enron] File not found at {path}. Run process_enron_csv.py first.")
+        return None
+
+    G = nx.DiGraph()
+    with open(path, encoding='utf-8') as f:
+        for line in f:
+            parts = line.strip().split("\t")
+            if len(parts) >= 2:
+                G.add_edge(parts[0], parts[1])
+
+    if G.number_of_nodes() > max_nodes:
+        # Keep largest weakly connected component subgraph up to max_nodes
+        lcc = max(nx.weakly_connected_components(G), key=len)
+        nodes = list(lcc)[:max_nodes]
+        G = G.subgraph(nodes).copy()
+
+    # Relabel to integers
+    G = nx.convert_node_labels_to_integers(G)
+    print(f"[Enron] Loaded: |V|={G.number_of_nodes()}, |E|={G.number_of_edges()}")
+    return G
+
+
+# ---------------------------------------------------------------------------
 # Dataset registry
 # ---------------------------------------------------------------------------
 
@@ -200,6 +234,7 @@ def load_dataset(name, **kwargs):
         "hiv": load_hiv,
         "reddit": load_reddit,
         "gnutella": load_gnutella,
+        "enron": load_enron,
     }
     if name not in loaders:
         raise ValueError(f"Unknown dataset '{name}'. Choose from {list(loaders)}")

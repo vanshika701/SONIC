@@ -29,7 +29,7 @@ def parse_args():
 
     # Dataset
     p.add_argument("--dataset", default="hiv",
-                   choices=["hiv", "reddit", "gnutella", "synthetic"],
+                   choices=["hiv", "reddit", "gnutella", "synthetic", "enron"],
                    help="Network dataset to use (default: hiv)")
 
     # Budget
@@ -83,7 +83,7 @@ def run_method(G, Gn, k, args):
     from algorithms.sonic import sonic
     from algorithms.spp import spp_selection
     from experiments.baselines import (
-        degree_immunization, katz_immunization,
+        degree_immunization, hits_authority_immunization,
         random_immunization, betweenness_immunization
     )
 
@@ -136,7 +136,7 @@ def run_method(G, Gn, k, args):
         return degree_immunization(G, k)
 
     elif args.method == "katz":
-        return katz_immunization(G, k)
+        return hits_authority_immunization(G, k)
 
     elif args.method == "random":
         return random_immunization(G, k)
