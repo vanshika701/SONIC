@@ -1,10 +1,8 @@
 """
 SPP Benchmark: Spectral Path-Product vs. baseline methods on real-world datasets.
 
-Runs SPP, Degree, HITS-Authority, HITS-Hub, Acquaintance, SourceOnly, and
-Random on HIV, Gnutella, and Reddit datasets.
-
-No training required — all baselines are pure graph algorithms.
+Runs SPP, DINO, Degree, HITS-Authority, HITS-Hub, Acquaintance, SourceOnly,
+and Random on the main datasets: HIV, Gnutella, and Reddit. Prints a summary comparison table.
 
 Run:
     python benchmark_datasets.py
@@ -60,7 +58,6 @@ from experiments.baselines import (
     acquaintance_immunization, source_only,
 )
 
-
 def _eval_delta(G, L):
     rho_b = spectral_radius(G)
     G2 = G.copy()
@@ -74,6 +71,11 @@ def run_method(name, G, Gn, tau, k):
 
     if name == "SPP (ours)":
         L, delta = spp_selection(G, k, tau, return_delta_rho=True, verbose=False)
+
+    elif name == "DINO (structural)":
+        from experiments.baselines import dino_immunization
+        L = dino_immunization(G, k)
+        delta = _eval_delta(G, L)
 
     elif name == "Degree":
         L = degree_immunization(G, k)
@@ -96,7 +98,9 @@ def run_method(name, G, Gn, tau, k):
         delta = _eval_delta(G, L)
 
     elif name == "Random":
-        L = random_immunization(G, k)
+        rng = np.random.default_rng(99)
+        nodes = list(G.nodes())
+        L = list(rng.choice(nodes, size=min(k, len(nodes)), replace=False))
         delta = _eval_delta(G, L)
 
     else:
@@ -110,7 +114,7 @@ def run_method(name, G, Gn, tau, k):
 # Runner
 # ─────────────────────────────────────────────────────────────────────────────
 
-METHODS = ["SPP (ours)", "Degree", "HITS-Authority", "HITS-Hub", "Acquaintance", "SourceOnly", "Random"]
+METHODS = ["SPP (ours)", "DINO (structural)", "Degree", "HITS-Authority", "HITS-Hub", "Acquaintance", "SourceOnly", "Random"]
 
 # Define graphs and their target k-budget (roughly scalable with |V|)
 DATASETS = {

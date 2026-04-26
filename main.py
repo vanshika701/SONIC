@@ -29,7 +29,7 @@ def parse_args():
 
     # Dataset
     p.add_argument("--dataset", default="hiv",
-                   choices=["hiv", "reddit", "gnutella", "synthetic"],
+                   choices=["hiv", "reddit", "gnutella", "synthetic", "enron"],
                    help="Network dataset to use (default: hiv)")
 
     # Budget
@@ -40,7 +40,7 @@ def parse_args():
 
     # Method
     p.add_argument("--method", default="sonic",
-                   choices=["sonic", "spp", "source_only", "degree",
+                   choices=["sonic", "spp", "dino", "source_only", "degree",
                             "katz", "random", "betweenness"],
                    help="Immunisation method (default: sonic)")
 
@@ -83,7 +83,7 @@ def run_method(G, Gn, k, args):
     from algorithms.sonic import sonic
     from algorithms.spp import spp_selection
     from experiments.baselines import (
-        degree_immunization,
+        degree_immunization, hits_authority_immunization,
         random_immunization, betweenness_immunization
     )
 
@@ -114,6 +114,14 @@ def run_method(G, Gn, k, args):
         return L
 
     # ----------------------------------------------------------------
+    # DINO (He et al. 2025) — pure structural SPP
+    # ----------------------------------------------------------------
+    elif args.method == "dino":
+        uniform_tau = {v: 1.0 for v in G.nodes()}
+        L, dr = spp_selection(G, k, uniform_tau, return_delta_rho=True, verbose=verbose)
+        return L
+
+    # ----------------------------------------------------------------
     # Source-only (Phase 1+2 only, skip Phase 3 KSCC optimisation)
     # ----------------------------------------------------------------
     elif args.method == "source_only":
@@ -135,6 +143,9 @@ def run_method(G, Gn, k, args):
     elif args.method == "degree":
         return degree_immunization(G, k)
 
+    elif args.method == "katz":
+        return hits_authority_immunization(G, k)
+
     elif args.method == "random":
         return random_immunization(G, k)
 
@@ -143,8 +154,6 @@ def run_method(G, Gn, k, args):
 
     else:
         raise ValueError(f"Unknown method: {args.method}")
-
-run_sonic_method = run_method
 
 
 def main():

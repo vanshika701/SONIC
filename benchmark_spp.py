@@ -89,9 +89,12 @@ def run_method(name, G, Gn, tau, k):
         L, delta = spp_selection(G, k, tau, return_delta_rho=True, verbose=False)
 
     elif name == "DINO (structural)":
-        # Uniform tau → SPP degenerates to pure Katz-structural selection
-        uniform_tau = {v: 1.0 for v in G.nodes()}
-        L, delta = spp_selection(G, k, uniform_tau, return_delta_rho=True, verbose=False)
+        from experiments.baselines import dino_immunization
+        L = dino_immunization(G, k)
+        rho_b = spectral_radius(G)
+        G2 = G.copy()
+        G2.remove_nodes_from(L)
+        delta = rho_b - spectral_radius(G2)
 
     elif name == "Degree":
         nodes = sorted(G.nodes(), key=lambda v: (G.out_degree(v), G.in_degree(v)), reverse=True)

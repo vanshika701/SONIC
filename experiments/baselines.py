@@ -44,6 +44,23 @@ def degree_immunization(G, k):
     return nodes[:k]
 
 
+def katz_immunization(G, k):
+    """
+    Select top-k nodes by Katz centrality.
+    """
+    rho = spectral_radius(G)
+    alpha = min(0.9 / max(rho, 1e-9), 0.01)
+    try:
+        katz = nx.katz_centrality(G, alpha=alpha, normalized=True,
+                                  max_iter=1000, tol=1e-6)
+    except (nx.PowerIterationFailedConvergence, Exception):
+        # Fallback to out-degree
+        katz = {v: float(G.out_degree(v)) for v in G.nodes()}
+    
+    nodes = sorted(katz, key=katz.get, reverse=True)
+    return nodes[:k]
+
+
 # ---------------------------------------------------------------------------
 # HITS baselines  (Kleinberg 1999 — no training required)
 # ---------------------------------------------------------------------------
@@ -183,6 +200,61 @@ def acquaintance_immunization(G, k, seed=42):
 
 
 # ---------------------------------------------------------------------------
+# True DINO Baseline (He et al., WSDM 2025)
+# ---------------------------------------------------------------------------
+
+def dino_immunization(G, k):
+    """
+    Original DINO structural baseline (He et al., WSDM 2025).
+    Greedy KSCC loop using the degree-product heuristic:
+        argmin F(v) = (Σ(d_in*d_out) - d_in(v)*d_out(v)) / (vol - d_in(v) - d_out(v))
+    """
+    from algorithms.spp import find_nontrivial_sccs, _merge_sorted_sccs
+
+    G_work = G.copy()
+    L = []
+    S = find_nontrivial_sccs(G_work)
+
+    for _ in range(k):
+        while S and len(S[0]) < 3:
+            S.pop(0)
+        if not S:
+            break
+
+        S1 = S.pop(0)
+        subG = G_work.subgraph(S1)
+        d_in  = dict(subG.in_degree())
+        d_out = dict(subG.out_degree())
+        vol   = subG.number_of_edges()
+        if vol == 0:
+            continue
+
+        dot_prod = sum(d_in[v] * d_out[v] for v in S1)
+        best_v, best_F = None, float('inf')
+        for v in S1:
+            vol_v = vol - d_in[v] - d_out[v]
+            F_v = (dot_prod - d_in[v] * d_out[v]) / vol_v if vol_v > 0 else 0.0
+            if F_v < best_F:
+                best_F, best_v = F_v, v
+
+        if best_v is None:
+            continue
+        L.append(best_v)
+        G_work.remove_node(best_v)
+        remaining = S1 - {best_v}
+        if len(remaining) >= 3:
+            S = _merge_sorted_sccs(
+                S, find_nontrivial_sccs(G_work.subgraph(remaining)), G_work
+            )
+
+    # Fallback: fill remaining budget with highest-degree nodes
+    if len(L) < k:
+        L.extend(degree_immunization(G_work, k - len(L)))
+
+    return L
+
+
+# ---------------------------------------------------------------------------
 # SONIC ablation variants
 # ---------------------------------------------------------------------------
 
@@ -237,6 +309,7 @@ def run_all_baselines(G, Gn, k, seed=42, verbose=True, run_betweenness=False):
         "HITS-Authority":   lambda: hits_authority_immunization(G, k),
         "HITS-Hub":         lambda: hits_hub_immunization(G, k),
         "Acquaintance":     lambda: acquaintance_immunization(G, k, seed=seed),
+        "DINO":             lambda: dino_immunization(G, k),
         "SourceOnly":       lambda: source_only(G, Gn, k),
     }
 
