@@ -83,7 +83,7 @@ def run_method(G, Gn, k, args):
     from algorithms.sonic import sonic
     from algorithms.spp import spp_selection
     from experiments.baselines import (
-        degree_immunization, katz_immunization,
+        degree_immunization,
         random_immunization, betweenness_immunization
     )
 
@@ -135,9 +135,6 @@ def run_method(G, Gn, k, args):
     elif args.method == "degree":
         return degree_immunization(G, k)
 
-    elif args.method == "katz":
-        return katz_immunization(G, k)
-
     elif args.method == "random":
         return random_immunization(G, k)
 
@@ -146,6 +143,8 @@ def run_method(G, Gn, k, args):
 
     else:
         raise ValueError(f"Unknown method: {args.method}")
+
+run_sonic_method = run_method
 
 
 def main():

@@ -28,7 +28,7 @@ beta = st.sidebar.slider("Infection Rate (β)", min_value=0.1, max_value=1.0, va
 max_steps = st.sidebar.slider("SI Simulation Steps", min_value=5, max_value=20, value=10, step=1)
 
 st.sidebar.header("3. Immunization Method")
-method = st.sidebar.selectbox("Method", ["sonic", "dino", "source_only", "degree", "random"])
+method = st.sidebar.selectbox("Method", ["sonic", "spp", "source_only", "degree", "random", "betweenness"])
 budget = st.sidebar.slider("Budget (k nodes)", min_value=1, max_value=300, value=20, step=1)
 
 # Method specific parameters
