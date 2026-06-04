@@ -1,5 +1,7 @@
 # SONIC: Source-Oriented Network Immunization and Containment
 
+
+##LINK- https://sonic-epidemic-container.streamlit.app/
 SONIC is a network immunization algorithm that answers: **given a spreading epidemic, which nodes should you remove to stop it most efficiently?**
 
 It combines two research papers:
